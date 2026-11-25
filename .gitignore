@@ -1,7 +1,7 @@
-# Keep raw unoptimized source assets local; optimized web assets live in assets/
-Services/
-ShieldEye Security Logo.png
-Background.mp3
+# Keep raw unoptimized source assets local at root only; optimized web assets live in assets/
+/Services/
+/ShieldEye Security Logo.png
+/Background.mp3
 
 # OS / Editor junk
 .DS_Store
