@@ -1,0 +1,147 @@
+/* Responsive Breakpoints: 1366px, 1024px, 768px, 425px, 375px, 320px */
+
+@media (max-width: 1180px) {
+  .primary-nav {
+    display: none;
+  }
+
+  .hamburger-btn {
+    display: inline-flex;
+  }
+
+  .equipment-grid {
+    grid-template-columns: repeat(3, minmax(0, 1fr));
+  }
+}
+
+@media (max-width: 1024px) {
+  .hero-grid,
+  .spotlight-banner,
+  .solution-panel,
+  .about-grid,
+  .checkout-layout,
+  .contact-wrapper {
+    grid-template-columns: 1fr;
+  }
+
+  .hero-section {
+    min-height: auto;
+    padding: 3.25rem 0;
+  }
+
+  .floating-metric-badge {
+    left: 0.75rem;
+    bottom: 0.75rem;
+  }
+
+  .trust-grid,
+  .visitor-metrics-grid {
+    grid-template-columns: repeat(2, minmax(0, 1fr));
+  }
+
+  .services-grid,
+  .packages-grid {
+    grid-template-columns: repeat(2, minmax(0, 1fr));
+  }
+
+  .checkout-summary {
+    position: static;
+  }
+
+  .footer-grid {
+    grid-template-columns: repeat(2, minmax(0, 1fr));
+  }
+}
+
+@media (max-width: 768px) {
+  .container {
+    width: min(100% - 1.5rem, 1240px);
+  }
+
+  .btn-whatsapp-nav span,
+  .order-basket-btn > span:first-of-type {
+    display: none;
+  }
+
+  .services-grid,
+  .packages-grid,
+  .equipment-grid,
+  .service-checkbox-grid {
+    grid-template-columns: repeat(2, minmax(0, 1fr));
+  }
+
+  .form-row-3,
+  .form-row-2,
+  .mode-toggle {
+    grid-template-columns: 1fr;
+  }
+
+  .search-shell {
+    padding: 1.35rem;
+  }
+}
+
+@media (max-width: 560px) {
+  .brand-text {
+    display: none;
+  }
+
+  .audio-label {
+    display: none;
+  }
+
+  .hero-highlights,
+  .quick-inquiry-grid,
+  .trust-grid,
+  .services-grid,
+  .packages-grid,
+  .equipment-grid,
+  .why-choose-grid,
+  .service-checkbox-grid,
+  .contact-details-list,
+  .visitor-metrics-grid,
+  .footer-grid {
+    grid-template-columns: 1fr;
+  }
+
+  .hero-actions .btn,
+  .contact-cta-buttons .btn,
+  .solution-cta-row .btn,
+  .spotlight-actions .btn {
+    width: 100%;
+  }
+
+  .search-input {
+    padding: 0.85rem 4.8rem 0.85rem 2.4rem;
+    font-size: 0.9rem;
+  }
+
+  .floating-whatsapp {
+    right: 0.9rem;
+    bottom: 0.9rem;
+    width: 52px;
+    height: 52px;
+  }
+
+  .floating-wa-tooltip {
+    display: none;
+  }
+}
+
+@media (max-width: 360px) {
+  .container {
+    width: calc(100% - 1rem);
+  }
+
+  .nav-actions {
+    gap: 0.35rem;
+  }
+
+  .checkout-form,
+  .summary-card,
+  .contact-form-card,
+  .spotlight-banner,
+  .solution-panel {
+    padding: 1rem;
+  }
+}
