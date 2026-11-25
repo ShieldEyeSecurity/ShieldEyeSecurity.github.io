@@ -17,7 +17,7 @@ window.VISITOR_COUNTER_CONFIG = {
   timezone: 'Asia/Karachi',
   onlineWindowMs: 5 * 60 * 1000, // 5-minute active window
   heartbeatIntervalMs: 30 * 1000, // Refresh heartbeat every 30s
-  requestTimeoutMs: 4500,
+  requestTimeoutMs: 15000,
 
   countApi: {
     baseUrl: 'https://countapi.mileshilliard.com/api/v1'
@@ -27,7 +27,6 @@ window.VISITOR_COUNTER_CONFIG = {
   // Set mode: 'firebase' above and provide your databaseURL (e.g. 'https://your-project-default-rtdb.firebaseio.com')
   firebase: {
     databaseURL: '',
-    // Optional public Web API key if your RTDB rules require auth; never place service account JSON here.
     apiKey: ''
   }
 };

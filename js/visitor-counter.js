@@ -3,8 +3,10 @@
 
   const STORAGE_KEYS = {
     UUID: 'se_visitor_uuid',
-    TOTAL_COUNTED: 'se_total_counted',
-    TODAY_DATE: 'se_today_counted_date',
+    LOCAL_TOTAL_COUNTED: 'se_local_total_counted',
+    LOCAL_TODAY_DATE: 'se_local_today_date',
+    REMOTE_TOTAL_COUNTED: 'se_remote_total_counted',
+    REMOTE_TODAY_DATE: 'se_remote_today_date',
     LOCAL_STATS: 'se_local_visitor_stats',
     ONLINE_SESSIONS: 'se_online_sessions'
   };
@@ -16,7 +18,7 @@
       timezone: 'Asia/Karachi',
       onlineWindowMs: 5 * 60 * 1000,
       heartbeatIntervalMs: 30 * 1000,
-      requestTimeoutMs: 4500,
+      requestTimeoutMs: 15000,
       countApi: { baseUrl: 'https://countapi.mileshilliard.com/api/v1' },
       firebase: { databaseURL: '' }
     }, global.VISITOR_COUNTER_CONFIG || {});
@@ -38,9 +40,6 @@
     return id;
   }
 
-  /**
-   * Returns current YYYY-MM-DD in Pakistan Standard Time (Asia/Karachi, UTC+5).
-   */
   function getPakistanDateString() {
     try {
       const parts = new Intl.DateTimeFormat('en-CA', {
@@ -72,6 +71,10 @@
     }
   }
 
+  function sleep(ms) {
+    return new Promise((resolve) => setTimeout(resolve, ms));
+  }
+
   function fetchWithTimeout(url, options, timeoutMs) {
     const controller = new AbortController();
     const timer = setTimeout(() => controller.abort(), timeoutMs);
@@ -79,7 +82,6 @@
       .finally(() => clearTimeout(timer));
   }
 
-  // Local deduplicated storage helper
   function readLocalStats(pktDate) {
     let data = { totalVisitors: 0, totalViews: 0, daily: {} };
     try {
@@ -89,8 +91,7 @@
       // ignore parse errors
     }
     if (!data.daily || typeof data.daily !== 'object') data.daily = {};
-    if (!data.daily[pktDate]) {
-      // Keep only current PKT date to stay lightweight
+    if (typeof data.daily[pktDate] !== 'number') {
       data.daily = { [pktDate]: 0 };
     }
     return data;
@@ -114,7 +115,6 @@
       sessions = {};
     }
 
-    // Remove expired sessions outside 5-minute window
     Object.keys(sessions).forEach((id) => {
       if (!sessions[id] || (now - sessions[id]) > windowMs) {
         delete sessions[id];
@@ -127,21 +127,37 @@
     } catch (_) {
       // ignore
     }
-    return Object.keys(sessions).length;
+    return Math.max(1, Object.keys(sessions).length);
   }
 
-  // CountAPI provider (supports hit or get)
-  async function countApiCall(baseUrl, action, key, timeoutMs) {
-    const endpoint = `${baseUrl.replace(/\/$/, '')}/${action}/${encodeURIComponent(key)}`;
-    const res = await fetchWithTimeout(endpoint, { method: 'GET' }, timeoutMs);
-    if (!res.ok) throw new Error(`CountAPI HTTP ${res.status}`);
-    const json = await res.json();
-    const val = json.value ?? json.count ?? json.hits;
-    if (typeof val !== 'number') throw new Error('Invalid CountAPI payload');
-    return val;
+  async function countApiRequest(baseUrl, action, key, timeoutMs) {
+    const cleanBase = baseUrl.replace(/\/$/, '');
+    const endpoint = `${cleanBase}/${action}/${encodeURIComponent(key)}`;
+
+    for (let attempt = 0; attempt < 2; attempt++) {
+      try {
+        const res = await fetchWithTimeout(endpoint, { method: 'GET' }, timeoutMs);
+        if (res.status === 404 && action === 'get') {
+          // Key not initialized yet on CountAPI — initialize with a hit
+          return countApiRequest(baseUrl, 'hit', key, timeoutMs);
+        }
+        if (res.status === 503 || res.status === 429) {
+          await sleep(600 * (attempt + 1));
+          continue;
+        }
+        if (!res.ok) throw new Error(`CountAPI HTTP ${res.status}`);
+        const json = await res.json();
+        const val = Number(json.value ?? json.count ?? json.hits);
+        if (!Number.isFinite(val)) throw new Error('Invalid CountAPI payload');
+        return val;
+      } catch (err) {
+        if (attempt === 1) throw err;
+        await sleep(500);
+      }
+    }
+    throw new Error('CountAPI retries exhausted');
   }
 
-  // Firebase Realtime Database REST provider
   async function firebaseGet(baseUrl, path, timeoutMs) {
     const res = await fetchWithTimeout(`${baseUrl.replace(/\/$/, '')}/${path}.json`, { method: 'GET' }, timeoutMs);
     if (!res.ok) throw new Error(`Firebase HTTP ${res.status}`);
@@ -174,13 +190,18 @@
       dateBadge.textContent = `${pktDate} \u2022 ${getPakistanTimeString()} PKT`;
     }
 
-    const isNewAllTimeVisitor = !localStorage.getItem(STORAGE_KEYS.TOTAL_COUNTED);
-    const isNewTodayVisitor = localStorage.getItem(STORAGE_KEYS.TODAY_DATE) !== pktDate;
+    const isNewLocalTotal = !localStorage.getItem(STORAGE_KEYS.LOCAL_TOTAL_COUNTED);
+    const isNewLocalToday = localStorage.getItem(STORAGE_KEYS.LOCAL_TODAY_DATE) !== pktDate;
 
-    // Update local deduplicated stats immediately so UI never stays blank
     const localData = readLocalStats(pktDate);
-    if (isNewAllTimeVisitor) localData.totalVisitors += 1;
-    if (isNewTodayVisitor) localData.daily[pktDate] = (localData.daily[pktDate] || 0) + 1;
+    if (isNewLocalTotal) {
+      localData.totalVisitors += 1;
+      localStorage.setItem(STORAGE_KEYS.LOCAL_TOTAL_COUNTED, '1');
+    }
+    if (isNewLocalToday) {
+      localData.daily[pktDate] = (localData.daily[pktDate] || 0) + 1;
+      localStorage.setItem(STORAGE_KEYS.LOCAL_TODAY_DATE, pktDate);
+    }
     localData.totalViews += 1;
     writeLocalStats(localData);
 
@@ -191,6 +212,8 @@
     setText('stat-total-views', localData.totalViews);
 
     let activeBackend = 'local';
+    let lastRemoteViews = localData.totalViews;
+    let viewSyncTimer = null;
 
     async function syncWithCountAPI() {
       const ns = cfg.namespace;
@@ -199,23 +222,44 @@
       const todayKey = `${ns}_daily_${pktDate}`;
       const viewsKey = `${ns}_total_views`;
 
-      const [totalVal, todayVal, viewsVal] = await Promise.all([
-        countApiCall(base, isNewAllTimeVisitor ? 'hit' : 'get', totalKey, cfg.requestTimeoutMs),
-        countApiCall(base, isNewTodayVisitor ? 'hit' : 'get', todayKey, cfg.requestTimeoutMs),
-        countApiCall(base, 'hit', viewsKey, cfg.requestTimeoutMs)
-      ]);
+      const needRemoteTotal = !localStorage.getItem(STORAGE_KEYS.REMOTE_TOTAL_COUNTED);
+      const needRemoteToday = localStorage.getItem(STORAGE_KEYS.REMOTE_TODAY_DATE) !== pktDate;
 
-      localStorage.setItem(STORAGE_KEYS.TOTAL_COUNTED, '1');
-      localStorage.setItem(STORAGE_KEYS.TODAY_DATE, pktDate);
+      let successCount = 0;
 
-      setText('stat-total-visitors', totalVal);
-      setText('stat-today-visitors', todayVal);
-      setText('stat-total-views', viewsVal);
+      const totalPromise = countApiRequest(base, needRemoteTotal ? 'hit' : 'get', totalKey, cfg.requestTimeoutMs)
+        .then((val) => {
+          localStorage.setItem(STORAGE_KEYS.REMOTE_TOTAL_COUNTED, '1');
+          setText('stat-total-visitors', val);
+          successCount += 1;
+        });
+
+      const todayPromise = countApiRequest(base, needRemoteToday ? 'hit' : 'get', todayKey, cfg.requestTimeoutMs)
+        .then((val) => {
+          localStorage.setItem(STORAGE_KEYS.REMOTE_TODAY_DATE, pktDate);
+          setText('stat-today-visitors', val);
+          successCount += 1;
+        });
+
+      const viewsPromise = countApiRequest(base, 'hit', viewsKey, cfg.requestTimeoutMs)
+        .then((val) => {
+          lastRemoteViews = Math.max(val, localData.totalViews);
+          setText('stat-total-views', lastRemoteViews);
+          successCount += 1;
+        });
+
+      await Promise.allSettled([totalPromise, todayPromise, viewsPromise]);
+
+      if (successCount === 0) {
+        throw new Error('All CountAPI requests failed');
+      }
+
       setText('stat-online-visitors', updateLocalPresence(visitorId, cfg.onlineWindowMs));
-
       activeBackend = 'countapi';
       if (modeNote) {
-        modeNote.textContent = 'Synced via CountAPI (unique browser UUID + PKT daily reset; Online count tracks active 5-min browser sessions).';
+        modeNote.textContent = successCount === 3
+          ? 'Synced via CountAPI (unique browser UUID + PKT daily reset; Online count tracks active 5-min browser sessions).'
+          : `Partially synced via CountAPI (${successCount}/3 metrics live; remaining metric using local fallback).`;
       }
     }
 
@@ -223,10 +267,13 @@
       const dbUrl = (cfg.firebase && cfg.firebase.databaseURL || '').trim();
       if (!dbUrl) throw new Error('Firebase databaseURL not configured');
 
+      const needRemoteTotal = !localStorage.getItem(STORAGE_KEYS.REMOTE_TOTAL_COUNTED);
+      const needRemoteToday = localStorage.getItem(STORAGE_KEYS.REMOTE_TODAY_DATE) !== pktDate;
+
       const stats = (await firebaseGet(dbUrl, 'visitorStats', cfg.requestTimeoutMs)) || {};
-      const nextTotal = (stats.totalVisitors || 0) + (isNewAllTimeVisitor ? 1 : 0);
+      const nextTotal = (stats.totalVisitors || 0) + (needRemoteTotal ? 1 : 0);
       const dailyMap = stats.daily || {};
-      const nextToday = (dailyMap[pktDate] || 0) + (isNewTodayVisitor ? 1 : 0);
+      const nextToday = (dailyMap[pktDate] || 0) + (needRemoteToday ? 1 : 0);
       const nextViews = (stats.totalViews || 0) + 1;
 
       await firebasePut(dbUrl, 'visitorStats/totalVisitors', nextTotal, cfg.requestTimeoutMs);
@@ -241,13 +288,13 @@
         if (typeof ts === 'number' && (now - ts) <= cfg.onlineWindowMs) {
           onlineCount += 1;
         } else {
-          // Clean up expired sessions asynchronously
           fetchWithTimeout(`${dbUrl.replace(/\/$/, '')}/presence/${encodeURIComponent(id)}.json`, { method: 'DELETE' }, cfg.requestTimeoutMs).catch(() => {});
         }
       }
 
-      localStorage.setItem(STORAGE_KEYS.TOTAL_COUNTED, '1');
-      localStorage.setItem(STORAGE_KEYS.TODAY_DATE, pktDate);
+      localStorage.setItem(STORAGE_KEYS.REMOTE_TOTAL_COUNTED, '1');
+      localStorage.setItem(STORAGE_KEYS.REMOTE_TODAY_DATE, pktDate);
+      lastRemoteViews = nextViews;
 
       setText('stat-total-visitors', nextTotal);
       setText('stat-today-visitors', nextToday);
@@ -261,13 +308,52 @@
     }
 
     function applyLocalFallback(reason) {
-      localStorage.setItem(STORAGE_KEYS.TOTAL_COUNTED, '1');
-      localStorage.setItem(STORAGE_KEYS.TODAY_DATE, pktDate);
       activeBackend = 'local';
       if (modeNote) {
         modeNote.textContent = `Browser-local analytics active (${reason}). Static GitHub Pages hosting cannot globally synchronize real-time presence without Firebase RTDB.`;
       }
     }
+
+    function recordSectionOrCatalogVisit() {
+      const currentData = readLocalStats(getPakistanDateString());
+      currentData.totalViews += 1;
+      writeLocalStats(currentData);
+
+      if (activeBackend === 'countapi') {
+        lastRemoteViews += 1;
+        setText('stat-total-views', lastRemoteViews);
+        clearTimeout(viewSyncTimer);
+        viewSyncTimer = setTimeout(() => {
+          const viewsKey = `${cfg.namespace}_total_views`;
+          countApiRequest(cfg.countApi.baseUrl, 'hit', viewsKey, cfg.requestTimeoutMs)
+            .then((val) => {
+              lastRemoteViews = val;
+              setText('stat-total-views', val);
+            })
+            .catch(() => {});
+        }, 500);
+      } else if (activeBackend === 'firebase' && cfg.firebase && cfg.firebase.databaseURL) {
+        lastRemoteViews += 1;
+        setText('stat-total-views', lastRemoteViews);
+        clearTimeout(viewSyncTimer);
+        viewSyncTimer = setTimeout(() => {
+          firebasePut(cfg.firebase.databaseURL, 'visitorStats/totalViews', lastRemoteViews, cfg.requestTimeoutMs).catch(() => {});
+        }, 500);
+      } else {
+        setText('stat-total-views', currentData.totalViews);
+      }
+    }
+
+    // Track catalog & section visits cleanly (nav links, category filters, solution tabs)
+    document.addEventListener('click', (e) => {
+      if (
+        e.target.closest('.nav-link[href^="#"], .mobile-nav-link[href^="#"], .footer-links-col a[href^="#"]') ||
+        e.target.closest('#service-categories .cat-btn') ||
+        e.target.closest('#solutions-tabs .sol-tab')
+      ) {
+        recordSectionOrCatalogVisit();
+      }
+    });
 
     (async function runSync() {
       if (cfg.mode === 'firebase' && cfg.firebase && cfg.firebase.databaseURL) {
@@ -275,7 +361,7 @@
           await syncWithFirebase();
           return;
         } catch (_) {
-          // fall through to CountAPI or local
+          // fall through
         }
       }
 
@@ -292,7 +378,7 @@
       applyLocalFallback('local mode configured');
     })();
 
-    // Heartbeat timer for 5-minute online window + PKT midnight rollover check
+    // Heartbeat timer for 5-minute online window + PKT midnight rollover
     setInterval(() => {
       const currentPktDate = getPakistanDateString();
       if (dateBadge) {
