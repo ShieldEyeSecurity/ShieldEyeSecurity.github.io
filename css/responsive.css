@@ -1,6 +1,21 @@
 /* Responsive Breakpoints: 1366px, 1024px, 768px, 425px, 375px, 320px */
 
-@media (max-width: 1180px) {
+@media (max-width: 1280px) {
+  .nav-link {
+    padding: 0.44rem 0.52rem;
+    font-size: 0.81rem;
+  }
+
+  .nav-link-accent {
+    padding: 0.44rem 0.68rem;
+  }
+
+  .audio-label {
+    display: none;
+  }
+}
+
+@media (max-width: 1120px) {
   .primary-nav {
     display: none;
   }
